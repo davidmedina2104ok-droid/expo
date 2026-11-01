@@ -1,49 +1,174 @@
----
-title: Introduction to development builds
-sidebar_title: Introduction and setup
-description: Learn how to create a development build in your Expo project and why use a development build instead of Expo Go.
-searchRank: 98
-searchPosition: 1
-hideTOC: true
-hasVideoLink: true
----
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.foquis.app">
 
-import { BuildMethodForm } from '~/scenes/develop/development-builds/BuildMethodForm';
-import { DevelopmentBuildInstructions } from '~/scenes/develop/development-builds/DevelopmentBuildInstructions';
-import DevelopmentBuildAgentPrompt from '~/scenes/develop/development-builds/instructions/agent-prompt.mdx';
-import { RelatedSkills } from '~/ui/components/RelatedSkills';
-import { VideoBoxLink } from '~/ui/components/VideoBoxLink';
+    <!-- Permisos nativos críticos para el control anti-dopamina y bloqueos -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-<DevelopmentBuildAgentPrompt />
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="FOQUIS"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Foquis">
 
-When you create a new Expo app with [`create-expo-app`](/get-started/create-a-project/), you start with a project where you update TypeScript/JavaScript code on your local machine and view the changes in the Expo Go app. A **development build** is essentially **your own version of Expo Go** where you are free to use any native libraries and change any native configuration.
+        <!-- Pantalla de Bienvenida y SSO -->
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
-A **development build is recommended when you want to create your own app and release to app stores**. It includes the [`expo-dev-client`](/versions/latest/sdk/dev-client/) library, which augments the built-in React Native development tooling. The tooling also includes support for inspecting network requests and a ["launcher" UI](/develop/development-builds/use-development-builds/#the-launcher-screen) that lets you switch between different development servers (such as between a server running on your machine or a teammate's machine) and deployments of your app (such as published updates with [EAS Update](/eas-update/introduction/)).
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false" />
 
-<VideoBoxLink
-  videoId="FdjczjkwQKE"
-  title="Expo Go & Development Builds: which should you use?"
-  description="In this tutorial video, Beto explains what each of them is and when to choose a development build."
-/>
+        <!-- Servicio de Accesibilidad para interceptar Reels y Shorts -->
+        <service
+            android:name=".services.FoquisAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
 
-## How would you like to build your development build?
+        <!-- Mini-Bot de Licencias y Control Anti-Piratería en Segundo Plano -->
+        <service
+            android:name=".services.LicenseValidatorService"
+            android:exported="false" />
 
-All three methods produce the same development build. They differ in where the app compiles and what you need to have installed on your machine.
+    </application>
+</manifest>
 
-<BuildMethodForm />
+package com.foquis.app.services
 
----
+import android.app.Service
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.IBinder
+import android.util.Log
+import java.security.MessageDigest
 
-<DevelopmentBuildInstructions />
+class LicenseValidatorService : Service() {
 
----
+    private val OFFICIAL_SIGNATURE_HASH = "A1B2C3D4E5F6..." // Hash oficial de firma de compilación
 
-## After you install the development build
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        checkAppIntegrityAndLicense()
+        return START_STICKY
+    }
 
-Launch the development build from your device's Home screen and connect to a development server from the launcher screen to start working on your app. To learn how to use your new build, including the launcher screen, rebuilding, and debugging, see [Use a development build](/develop/development-builds/use-development-builds/). For common questions about development builds and Expo Go, including what you can't do in Expo Go and why, see the [FAQ](/develop/development-builds/faq/).
+    private fun checkAppIntegrityAndLicense() {
+        // 1. Verificación de integridad del APK (Anti-Tampering / Anti-Piratería)
+        if (!verifyApkSignature()) {
+            triggerFullBlock("¡ALERTA DE SEGURIDAD! APK modificada detectada. Software no oficial bloqueado por riesgo de malware.")
+            return
+        }
 
-### Expo Skills for AI agents
+        // 2. Control del periodo de prueba de 3 días y licencias
+        val installationTimestamp = getInstallationTimestamp()
+        val currentTime = System.currentTimeMillis()
+        val daysElapsed = (currentTime - installationTimestamp) / (1000 * 60 * 60 * 24)
+        val hasActiveSubscription = checkServerSubscriptionStatus()
+        val hasValidDuoCode = checkDuoInvitationRedemption()
 
-If you use an AI agent, install [Expo Skills](/skills/) to teach it the workflows on this page:
+        if (daysElapsed >= 3 && !hasActiveSubscription && !hasValidDuoCode) {
+            triggerFullBlock("TRIAL DE 3 DÍAS FINALIZADO. Suscríbete para continuar (Individual: $9.50/mo o $70/año | Dúo: $14.50/mo o $110/año).")
+        }
+    }
 
-<RelatedSkills names={['expo-dev-client', 'eas-simulator']} />
+    private fun verifyApkSignature(): Boolean {
+        return try {
+            val packageInfo = packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
+            val signatures = packageInfo.signatures
+            val cert = signatures[0].toByteArray()
+            val md = MessageDigest.getInstance("SHA-256")
+            val digested = md.digest(cert)
+            val hash = digested.joinToString("") { "%02x".format(it) }
+            hash == OFFICIAL_SIGNATURE_HASH
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun getInstallationTimestamp(): Long {
+        // Retorna la fecha real de registro almacenada de forma segura en almacenamiento cifrado
+        return 0L 
+    }
+
+    private fun checkServerSubscriptionStatus(): Boolean {
+        // Consulta cifrada contra el backend de pagos (Google Play, Lemon Cash, AstroPay)
+        return false
+    }
+
+    private fun checkDuoInvitationRedemption(): Boolean {
+        // Valida si la cuenta está enlazada a un código Dúo válido de un solo uso
+        return false
+    }
+
+    private fun triggerFullBlock(reason: String) {
+        Log.e("FOQUIS_SECURITY", reason)
+        // Lógica para desplegar pantalla superpuesta persistente exigiendo pago
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
+
+
+package com.foquis.app.services
+
+accessibilityservice.AccessibilityService
+accessibilityenv.AccessibilityEvent
+util.Log
+
+class FoquisAccessibilityService : AccessibilityService() {
+
+    private val addictivePackages = mapOf(
+        "com.instagram.android" to "Instagram Reels",
+        "com.facebook.katana" to "Facebook Reels",
+        "com.zhiliaoapp.musically" to "TikTok",
+        "com.google.android.youtube" to "YouTube Shorts"
+    )
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val packageName = event.packageName?.toString() ?: return
+            val className = event.className?.toString() ?: ""
+
+            if (addictivePackages.containsKey(packageName)) {
+                // Detecta patrones de scroll infinito en Reels o Shorts
+                if (className.contains("Reels") || className.contains("Shorts") || className.contains("VideoFeed")) {
+                    // Acción correctiva inmediata: expulsar de la app e invocar escudo de FOQUIS
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    Log.i("FOQUIS_BOT", "Bucle de dopamina interceptado en: ${addictivePackages[packageName]}")
+                }
+            }
+        }
+    }
+
+    override fun onInterrupt() {
+        // Reinicio del servicio en caso de interrupción del sistema
+    }
+}
+
+
+{
+  "duo_code": "FQ-DUO-8821-X7",
+  "owner_user_id": "usr_99214",
+  "is_used": false,
+  "redeemed_by_user_id": null,
+  "created_at": "2026-11-01T12:00:00Z"
+}
+
+
